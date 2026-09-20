@@ -1,0 +1,23 @@
+# 原始gitignore
+.venv/
+__pycache__/
+*.pyc
+runs/
+*.pt
+
+# macOS 系统文件
+.DS_Store
+**/.DS_Store
+
+# 数据集与文本文件
+code/data/*.txt
+code/data/tokenizer.json
+
+# 过程文件
+process/
+
+# 报告文件
+report/
+
+# 其他指导文件
+GUIDE.md
