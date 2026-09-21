@@ -4,8 +4,19 @@ from torch import nn
 from torch.nn import functional as F
 
 
+class SwiGLU(nn.Module):
+    def __init__(self, width, hidden):
+        super().__init__()
+        self.gate = nn.Linear(width, hidden)
+        self.value = nn.Linear(width, hidden)
+        self.output = nn.Linear(hidden, width)
+
+    def forward(self, x):
+        return self.output(F.silu(self.gate(x)) * self.value(x))
+
+
 class RoPEBlock(nn.Module):
-    def __init__(self, width, heads, cos, sin):
+    def __init__(self, width, heads, cos, sin, mlp_type='gelu', mlp_hidden=None):
         super().__init__()
         if width % heads != 0:
             raise ValueError('width must be divisible by heads.')
@@ -18,11 +29,17 @@ class RoPEBlock(nn.Module):
         self.norm2 = nn.LayerNorm(width)
         self.qkv = nn.Linear(width, 3 * width)
         self.proj = nn.Linear(width, width)
-        self.mlp = nn.Sequential(
-            nn.Linear(width, 4 * width),
-            nn.GELU(),
-            nn.Linear(4 * width, width),
-        )
+        if mlp_type == 'swiglu':
+            hidden = mlp_hidden or (8 * width // 3)
+            self.mlp = SwiGLU(width, hidden)
+        elif mlp_type == 'gelu':
+            self.mlp = nn.Sequential(
+                nn.Linear(width, 4 * width),
+                nn.GELU(),
+                nn.Linear(4 * width, width),
+            )
+        else:
+            raise ValueError("mlp_type must be 'gelu' or 'swiglu'.")
         self.register_buffer('rope_cos', cos, persistent=False)
         self.register_buffer('rope_sin', sin, persistent=False)
 
@@ -59,9 +76,11 @@ class RoPEGPT(nn.Module):
         frequencies = 10000 ** (-torch.arange(0, head_dim, 2).float() / head_dim)
         angles = positions[:, None] * frequencies[None, :]
         cos, sin = angles.cos(), angles.sin()
+        mlp_type = config.get('mlp_type', 'gelu')
+        mlp_hidden = config.get('mlp_hidden')
         self.token = nn.Embedding(config['vocab'], width)
         self.blocks = nn.ModuleList([
-            RoPEBlock(width, heads, cos, sin)
+            RoPEBlock(width, heads, cos, sin, mlp_type, mlp_hidden)
             for _ in range(config['depth'])
         ])
         self.norm = nn.LayerNorm(width)
