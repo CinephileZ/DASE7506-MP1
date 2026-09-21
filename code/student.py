@@ -5,8 +5,13 @@ change. Explain it, measure its cost and perform a mechanism ablation. Merely
 renaming the baseline or reporting a lucky seed is not an algorithmic contribution.
 You can replace this factory/model completely while keeping the two model interfaces.
 """
-from model import GPT
+# from model import GPT
 
+# def build_model(config):
+#     return GPT(config)
+
+from rope_model import RoPEGPT
 
 def build_model(config):
-    return GPT(config)
+    return RoPEGPT(config)
+
