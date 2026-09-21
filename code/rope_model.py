@@ -16,7 +16,8 @@ class SwiGLU(nn.Module):
 
 
 class RoPEBlock(nn.Module):
-    def __init__(self, width, heads, cos, sin, mlp_type='gelu', mlp_hidden=None):
+    def __init__(self, width, heads, cos, sin, qk_norm=False,
+                 mlp_type='gelu', mlp_hidden=None):
         super().__init__()
         if width % heads != 0:
             raise ValueError('width must be divisible by heads.')
@@ -25,6 +26,7 @@ class RoPEBlock(nn.Module):
             raise ValueError('head dimension must be even for RoPE.')
         self.heads = heads
         self.head_dim = head_dim
+        self.qk_norm = qk_norm
         self.norm1 = nn.LayerNorm(width)
         self.norm2 = nn.LayerNorm(width)
         self.qkv = nn.Linear(width, 3 * width)
@@ -57,6 +59,10 @@ class RoPEBlock(nn.Module):
             batch, length, 3, self.heads, self.head_dim
         ).permute(2, 0, 3, 1, 4)
         q, k = self.rotate(q), self.rotate(k)
+        if self.qk_norm:
+            scale = self.head_dim ** 0.5
+            q = F.normalize(q.float(), dim=-1).to(dtype=q.dtype) * scale
+            k = F.normalize(k.float(), dim=-1).to(dtype=k.dtype) * scale
         attended = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         x = x + self.proj(attended.transpose(1, 2).reshape(batch, length, width))
         return x + self.mlp(self.norm2(x))
@@ -76,11 +82,12 @@ class RoPEGPT(nn.Module):
         frequencies = 10000 ** (-torch.arange(0, head_dim, 2).float() / head_dim)
         angles = positions[:, None] * frequencies[None, :]
         cos, sin = angles.cos(), angles.sin()
+        qk_norm = bool(config.get('qk_norm', False))
         mlp_type = config.get('mlp_type', 'gelu')
         mlp_hidden = config.get('mlp_hidden')
         self.token = nn.Embedding(config['vocab'], width)
         self.blocks = nn.ModuleList([
-            RoPEBlock(width, heads, cos, sin, mlp_type, mlp_hidden)
+            RoPEBlock(width, heads, cos, sin, qk_norm, mlp_type, mlp_hidden)
             for _ in range(config['depth'])
         ])
         self.norm = nn.LayerNorm(width)

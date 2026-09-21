@@ -41,7 +41,9 @@ def main():
     config = json.loads(args.config.read_text())
     model, implementation_sha = make_model(args.implementation, config, device)
     args.run_dir.mkdir(parents=True, exist_ok=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=.001, weight_decay=.1)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
+    )
     tokens = data['train'][0].to(device)
     rng = torch.Generator().manual_seed(args.seed)
     if device.type == 'cuda':
