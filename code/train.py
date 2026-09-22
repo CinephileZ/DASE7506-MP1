@@ -21,15 +21,20 @@ def main():
     p.add_argument('--threads', type=int, default=4)
     p.add_argument('--seed', type=int, default=17)
     p.add_argument('--steps', type=int, default=1200)
-    p.add_argument('--schedule-steps', type=int, default=4800,
+    p.add_argument('--schedule-steps', type=int, default=None,
                    help='Cosine decay horizon; defaults to the number of updates.')
+    p.add_argument('--learning-rate', type=float, default=0.001,
+                   help='Peak AdamW learning rate before cosine decay.')
+    p.add_argument('--weight-decay', type=float, default=0.1,
+                   help='AdamW decoupled weight decay.')
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--eval-every', type=int, default=0,
                    help='Optional validation-curve interval; 0 evaluates only after training.')
     args = p.parse_args()
     schedule_steps = args.schedule_steps or args.steps
-    if args.steps < 1 or args.batch_size < 1 or schedule_steps < 1:
-        p.error('Batch size and step counts must be positive.')
+    if (args.steps < 1 or args.batch_size < 1 or schedule_steps < 1
+            or args.learning_rate <= 0 or args.weight_decay < 0):
+        p.error('Steps and batch size must be positive; learning rate must be positive and weight decay non-negative.')
     if args.steps > schedule_steps:
         p.error('--steps cannot exceed --schedule-steps.')
     if args.run_dir.exists() and any(args.run_dir.iterdir()):
@@ -56,7 +61,7 @@ def main():
     for step in range(args.steps):
         starts = torch.randint(len(tokens)-257, (args.batch_size,), generator=rng).to(device)
         batch = tokens[starts[:,None]+torch.arange(257,device=device)]
-        learning_rate = .001 * min(1.,(step+1)/100) * (.1+.9*.5*(1+math.cos(math.pi*step/schedule_steps)))
+        learning_rate = args.learning_rate * min(1.,(step+1)/100) * (.1+.9*.5*(1+math.cos(math.pi*step/schedule_steps)))
         for group in optimizer.param_groups:
             group['lr'] = learning_rate
         optimizer.zero_grad(set_to_none=True)
@@ -87,6 +92,7 @@ def main():
     result = {'protocol':PROTOCOL,'implementation':args.implementation,'config':config,'seed':args.seed,
               'parameters':sum(p.numel() for p in model.parameters()),'precision':precision,
               'steps':args.steps,'schedule_steps':schedule_steps,'batch_size':args.batch_size,
+              'learning_rate':args.learning_rate,'weight_decay':args.weight_decay,
               'train_tokens':args.steps*args.batch_size*256,'preparation_seconds':preparation_seconds,
               'train_seconds':train_seconds,'validation':validation,'history':history,
               'validation_history':validation_history,
