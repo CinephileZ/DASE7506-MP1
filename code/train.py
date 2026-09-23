@@ -30,10 +30,13 @@ def main():
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--eval-every', type=int, default=0,
                    help='Optional validation-curve interval; 0 evaluates only after training.')
+    p.add_argument('--checkpoint-every', type=int, default=0,
+                   help='Save periodic model checkpoints under run-dir/checkpoints; 0 disables.')
     args = p.parse_args()
     schedule_steps = args.schedule_steps or args.steps
     if (args.steps < 1 or args.batch_size < 1 or schedule_steps < 1
-            or args.learning_rate <= 0 or args.weight_decay < 0):
+            or args.learning_rate <= 0 or args.weight_decay < 0
+            or args.checkpoint_every < 0):
         p.error('Steps and batch size must be positive; learning rate must be positive and weight decay non-negative.')
     if args.steps > schedule_steps:
         p.error('--steps cannot exceed --schedule-steps.')
@@ -46,6 +49,9 @@ def main():
     config = json.loads(args.config.read_text())
     model, implementation_sha = make_model(args.implementation, config, device)
     args.run_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = args.run_dir/'checkpoints'
+    if args.checkpoint_every:
+        checkpoint_dir.mkdir()
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
@@ -70,6 +76,15 @@ def main():
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(),1.)
         optimizer.step()
+        completed_step = step + 1
+        if args.checkpoint_every and (completed_step % args.checkpoint_every == 0
+                          or completed_step == args.steps):
+            periodic_state = {name: value.detach().cpu().clone()
+                      for name, value in model.state_dict().items()}
+            torch.save({'protocol':PROTOCOL,'implementation':args.implementation,
+                'config':config,'seed':args.seed,'step':completed_step,
+                'model':periodic_state},
+                   checkpoint_dir/f'step-{completed_step:06d}.pt')
         if (step+1)%100 == 0 or step+1 == args.steps:
             row = {'step':step+1,'loss':loss.item(),'seconds':time.perf_counter()-started-intermediate_validation_seconds}
             history.append(row)
