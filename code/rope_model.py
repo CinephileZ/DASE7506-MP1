@@ -17,7 +17,7 @@ class SwiGLU(nn.Module):
 
 class RoPEBlock(nn.Module):
     def __init__(self, width, heads, cos, sin, qk_norm=False,
-                 mlp_type='gelu', mlp_hidden=None):
+                 mlp_type='gelu', mlp_hidden=None, parallel_block=False):
         super().__init__()
         if width % heads != 0:
             raise ValueError('width must be divisible by heads.')
@@ -27,6 +27,7 @@ class RoPEBlock(nn.Module):
         self.heads = heads
         self.head_dim = head_dim
         self.qk_norm = qk_norm
+        self.parallel_block = parallel_block
         self.norm1 = nn.LayerNorm(width)
         self.norm2 = nn.LayerNorm(width)
         self.qkv = nn.Linear(width, 3 * width)
@@ -55,6 +56,7 @@ class RoPEBlock(nn.Module):
 
     def forward(self, x):
         batch, length, width = x.shape
+        residual = x
         q, k, v = self.qkv(self.norm1(x)).view(
             batch, length, 3, self.heads, self.head_dim
         ).permute(2, 0, 3, 1, 4)
@@ -64,8 +66,10 @@ class RoPEBlock(nn.Module):
             q = F.normalize(q.float(), dim=-1).to(dtype=q.dtype) * scale
             k = F.normalize(k.float(), dim=-1).to(dtype=k.dtype) * scale
         attended = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        x = x + self.proj(attended.transpose(1, 2).reshape(batch, length, width))
-        return x + self.mlp(self.norm2(x))
+        attended = self.proj(attended.transpose(1, 2).reshape(batch, length, width))
+        if self.parallel_block:
+            return residual + attended + self.mlp(self.norm2(residual))
+        return residual + attended + self.mlp(self.norm2(residual + attended))
 
 
 class RoPEGPT(nn.Module):
@@ -85,9 +89,11 @@ class RoPEGPT(nn.Module):
         qk_norm = bool(config.get('qk_norm', False))
         mlp_type = config.get('mlp_type', 'gelu')
         mlp_hidden = config.get('mlp_hidden')
+        parallel_block = bool(config.get('parallel_block', False))
         self.token = nn.Embedding(config['vocab'], width)
         self.blocks = nn.ModuleList([
-            RoPEBlock(width, heads, cos, sin, qk_norm, mlp_type, mlp_hidden)
+            RoPEBlock(width, heads, cos, sin, qk_norm, mlp_type, mlp_hidden,
+                      parallel_block)
             for _ in range(config['depth'])
         ])
         self.norm = nn.LayerNorm(width)
