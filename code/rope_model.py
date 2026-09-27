@@ -17,8 +17,10 @@ class SwiGLU(nn.Module):
 
 class RoPEBlock(nn.Module):
     def __init__(self, width, heads, cos, sin, qk_norm=False,
-                 mlp_type='gelu', mlp_hidden=None, parallel_block=False):
+                 mlp_type='gelu', mlp_hidden=None, parallel_block=False, dropout=0.0):
         super().__init__()
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError('dropout must be in [0, 1).')
         if width % heads != 0:
             raise ValueError('width must be divisible by heads.')
         head_dim = width // heads
@@ -28,6 +30,7 @@ class RoPEBlock(nn.Module):
         self.head_dim = head_dim
         self.qk_norm = qk_norm
         self.parallel_block = parallel_block
+        self.dropout = dropout
         self.norm1 = nn.LayerNorm(width)
         self.norm2 = nn.LayerNorm(width)
         self.qkv = nn.Linear(width, 3 * width)
@@ -43,6 +46,7 @@ class RoPEBlock(nn.Module):
             )
         else:
             raise ValueError("mlp_type must be 'gelu' or 'swiglu'.")
+        self.resid_dropout = nn.Dropout(dropout)
         self.register_buffer('rope_cos', cos, persistent=False)
         self.register_buffer('rope_sin', sin, persistent=False)
 
@@ -65,11 +69,18 @@ class RoPEBlock(nn.Module):
             scale = self.head_dim ** 0.5
             q = F.normalize(q.float(), dim=-1).to(dtype=q.dtype) * scale
             k = F.normalize(k.float(), dim=-1).to(dtype=k.dtype) * scale
-        attended = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        attended = self.proj(attended.transpose(1, 2).reshape(batch, length, width))
+        attended = F.scaled_dot_product_attention(
+            q, k, v, is_causal=True,
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+        attended = self.resid_dropout(
+            self.proj(attended.transpose(1, 2).reshape(batch, length, width))
+        )
         if self.parallel_block:
-            return residual + attended + self.mlp(self.norm2(residual))
-        return residual + attended + self.mlp(self.norm2(residual + attended))
+            mlp_output = self.resid_dropout(self.mlp(self.norm2(residual)))
+            return residual + attended + mlp_output
+        mlp_output = self.resid_dropout(self.mlp(self.norm2(residual + attended)))
+        return residual + attended + mlp_output
 
 
 class RoPEGPT(nn.Module):
@@ -90,10 +101,14 @@ class RoPEGPT(nn.Module):
         mlp_type = config.get('mlp_type', 'gelu')
         mlp_hidden = config.get('mlp_hidden')
         parallel_block = bool(config.get('parallel_block', False))
+        dropout = float(config.get('dropout', 0.0))
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError('dropout must be in [0, 1).')
         self.token = nn.Embedding(config['vocab'], width)
+        self.embedding_dropout = nn.Dropout(dropout)
         self.blocks = nn.ModuleList([
             RoPEBlock(width, heads, cos, sin, qk_norm, mlp_type, mlp_hidden,
-                      parallel_block)
+                      parallel_block, dropout)
             for _ in range(config['depth'])
         ])
         self.norm = nn.LayerNorm(width)
@@ -109,7 +124,7 @@ class RoPEGPT(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def features(self, ids):
-        x = self.token(ids)
+        x = self.embedding_dropout(self.token(ids))
         for block in self.blocks:
             x = block(x)
         return self.norm(x)

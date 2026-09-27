@@ -59,6 +59,8 @@ def main():
                    help='Peak AdamW learning rate before cosine decay.')
     p.add_argument('--weight-decay', type=float, default=0.1,
                    help='AdamW decoupled weight decay.')
+    p.add_argument('--dropout', type=float, default=None,
+                   help='Dropout probability; 0 disables dropout (overrides config).')
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--ema-decay', type=float, default=0.999,
                    help='EMA decay; only used when --averaging-method=ema.')
@@ -76,6 +78,7 @@ def main():
     schedule_steps = args.schedule_steps or args.steps
     if (args.steps < 1 or args.batch_size < 1 or schedule_steps < 1
             or args.learning_rate <= 0 or args.weight_decay < 0
+            or (args.dropout is not None and not 0.0 <= args.dropout < 1.0)
             or args.checkpoint_every < 0 or args.average_start_step < 1
             or args.average_start_step > args.steps or args.average_every < 1):
         p.error('Steps and batch size must be positive; learning rate must be positive and weight decay non-negative.')
@@ -90,6 +93,7 @@ def main():
     prepared = time.perf_counter()
     data = load_data()
     config = json.loads(args.config.read_text())
+    config['dropout'] = config.get('dropout', 0.0) if args.dropout is None else args.dropout
     model, implementation_sha = make_model(args.implementation, config, device)
     averaged_model = None
     averaging_started = False
