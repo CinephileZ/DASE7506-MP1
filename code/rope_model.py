@@ -113,6 +113,10 @@ class RoPEGPT(nn.Module):
         ])
         self.norm = nn.LayerNorm(width)
         self.head = nn.Linear(width, config['vocab'], bias=False)
+        self.neural_cache = bool(config.get('neural_cache', False))
+        if self.neural_cache:
+            self.cache_scale = nn.Parameter(torch.tensor(10.0))
+            self.cache_gate = nn.Parameter(torch.tensor(-2.0))
         self.apply(self.initialize)
         self.head.weight = self.token.weight
 
@@ -130,7 +134,37 @@ class RoPEGPT(nn.Module):
         return self.norm(x)
 
     def forward(self, ids):
-        return self.head(self.features(ids))
+        features = self.features(ids)
+        logits = self.head(features)
+        if not self.neural_cache:
+            return logits
+        if ids.shape[1] < 2:
+            return F.log_softmax(logits.float(), dim=-1)
+
+        batch, length, _ = features.shape
+        normalized = F.normalize(features.float(), dim=-1)
+        scores = torch.matmul(normalized, normalized[:, :-1].transpose(1, 2))
+        scores = scores * self.cache_scale.clamp(1.0, 100.0)
+        query_positions = torch.arange(length, device=ids.device)
+        key_positions = torch.arange(length - 1, device=ids.device)
+        causal = key_positions.unsqueeze(0) < query_positions.unsqueeze(1)
+        scores = scores.masked_fill(~causal.unsqueeze(0), torch.finfo(scores.dtype).min)
+        weights = F.softmax(scores, dim=-1)
+
+        cache_probs = torch.zeros(
+            batch, length, logits.shape[-1], device=logits.device, dtype=torch.float32
+        )
+        cache_tokens = ids[:, 1:]
+        cache_probs.scatter_add_(
+            2, cache_tokens[:, None, :].expand(-1, length, -1), weights
+        )
+
+        gate = torch.sigmoid(self.cache_gate)
+        gate = gate * (query_positions > 0).to(dtype=gate.dtype)[None, :, None]
+        language_probs = F.softmax(logits.float(), dim=-1)
+        mixed_probs = (1.0 - gate) * language_probs + gate * cache_probs
+        mixed_logits = mixed_probs.clamp_min(torch.finfo(mixed_probs.dtype).tiny).log()
+        return mixed_logits + logits.float().logsumexp(dim=-1, keepdim=True)
 
     def predict_log_probs(self, ids):
         return F.log_softmax(self(ids).float(), dim=-1)
