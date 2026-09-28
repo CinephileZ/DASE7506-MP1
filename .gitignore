@@ -5,6 +5,10 @@ __pycache__/
 runs/
 *.pt
 
+# 最终 checkpoint 文件
+!code/final/full-10000/swa-checkpoint.pt
+!code/final/baseline-10000/checkpoint.pt
+
 # macOS 系统文件
 .DS_Store
 **/.DS_Store
