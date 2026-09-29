@@ -18,10 +18,9 @@ code/data/*.txt
 code/data/tokenizer.json
 
 # 过程文件
-process/
+process/*
+!process/RECORD_EN.md
+!process/GUIDE.md
 
-# 报告文件
-report/
-
-# 其他指导文件
-GUIDE.md
+# # 报告文件
+# report/
